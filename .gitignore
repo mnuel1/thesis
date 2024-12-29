@@ -1,0 +1,16 @@
+Include
+Lib
+Scripts
+share
+input_dataset
+output_dataset
+
+
+# Ignore common image formats
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg

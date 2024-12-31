@@ -1,5 +1,6 @@
 import os
 import zipfile
+import json
 import uuid
 import numpy as np
 import cv2
@@ -16,135 +17,179 @@ logger = logging.getLogger(__name__)
 # Constants
 MIN_MATCH_COUNT = 10
 FLANN_INDEX_KDTREE = 0
+TEMP_UPLOAD_DIR = "temp_upload"
 
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
 # Helper function to process images and compute bounding boxes
-def process_images(base_image_path, image_paths):
-    results = []
-    img1 = cv2.imread(base_image_path, 0)  # Base query image
-
-    # Compute SIFT keypoints and descriptors for the base image
+def process_images(base_image_path, target_image_path):
+    img1 = cv2.imread(base_image_path, 0)  # base image 
+    img2 = cv2.imread(target_image_path, 0)  # target image
+    # Compute SIFT keypoints and descriptors
     kp1, des1 = pysift.computeKeypointsAndDescriptors(img1)
+    kp2, des2 = pysift.computeKeypointsAndDescriptors(img2)
 
-    for image_path in image_paths:
-        img2 = cv2.imread(image_path, 0)  # Current image to compare
-        if img2 is None:
-            logger.error(f"Could not read image: {image_path}")
-            continue
+    # Initialize and use FLANN
+    FLANN_INDEX_KDTREE = 0
+    index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+    search_params = dict(checks=50)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    matches = flann.knnMatch(des1, des2, k=2)
 
-        # Compute SIFT keypoints and descriptors for the current image
-        kp2, des2 = pysift.computeKeypointsAndDescriptors(img2)
+    # Lowe's ratio test
+    good = []
+    for m, n in matches:
+        if m.distance < 0.7 * n.distance:
+            good.append(m)
 
-        # Initialize FLANN matcher
-        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
-        search_params = dict(checks=50)
-        flann = cv2.FlannBasedMatcher(index_params, search_params)
-        matches = flann.knnMatch(des1, des2, k=2)
+    if len(good) > MIN_MATCH_COUNT:
+        # Estimate homography between template and scene
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
 
-        # Apply Lowe's ratio test
-        good = []
-        for m, n in matches:
-            if m.distance < 0.7 * n.distance:
-                good.append(m)
+        M = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)[0]
 
-        if len(good) > MIN_MATCH_COUNT:
-            # Estimate homography between base and current image
-            src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-            dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        # Define bounding box in the template image
+        h, w = img1.shape
+        pts = np.float32([[0, 0],
+                        [0, h - 1],
+                        [w - 1, h - 1],
+                        [w - 1, 0]]).reshape(-1, 1, 2)
 
-            M = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)[0]
+        # Transform points to the scene image
+        dst = cv2.perspectiveTransform(pts, M)
 
-            # Define bounding box in the base image
-            h, w = img1.shape
-            pts = np.float32([[0, 0],
-                              [0, h - 1],
-                              [w - 1, h - 1],
-                              [w - 1, 0]]).reshape(-1, 1, 2)
+        # Compute YOLO bounding box format
+        x_min = np.min(dst[:, 0, 0])
+        x_max = np.max(dst[:, 0, 0])
+        y_min = np.min(dst[:, 0, 1])
+        y_max = np.max(dst[:, 0, 1])
 
-            # Transform points to the current image
-            dst = cv2.perspectiveTransform(pts, M)
+        # Width and height of the scene image
+        img_width, img_height = img2.shape[1], img2.shape[0]
 
-            # Compute YOLO bounding box format
-            x_min = np.min(dst[:, 0, 0])
-            x_max = np.max(dst[:, 0, 0])
-            y_min = np.min(dst[:, 0, 1])
-            y_max = np.max(dst[:, 0, 1])
+        # Normalize coordinates and compute center and dimensions
+        x_center = ((x_min + x_max) / 2) / img_width
+        y_center = ((y_min + y_max) / 2) / img_height
+        width = (x_max - x_min) / img_width
+        height = (y_max - y_min) / img_height
 
-            # Dimensions of the current image
-            img_width, img_height = img2.shape[1], img2.shape[0]
+        return x_center, y_center, width, height
+    else:
+        return None  # Not enough matches found
 
-            # Normalize coordinates and compute center and dimensions
-            x_center = ((x_min + x_max) / 2) / img_width
-            y_center = ((y_min + y_max) / 2) / img_height
-            width = (x_max - x_min) / img_width
-            height = (y_max - y_min) / img_height
 
-            # Class index (assuming class ID 0 for this example)
-            class_id = 0
+def validate_request(base_file, target_file):
 
-            # Append result
-            results.append(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}")
-        else:
-            logger.warning(f"Not enough matches found for image: {image_path}")
+    if base_file.filename == '' or target_file.filename == '':
+        return 1, "No file selected"
+        
+    if not ((base_file.filename.endswith('.zip') or base_file.filename.endswith('.rar')) 
+            or target_file.filename.endswith('.zip') or target_file.filename.endswith('.rar')):
+        return 1, "Only ZIP or RAR files are allowed"
 
-    return results
+    return 0, "" # no error
 
-# API Endpoint to process images
+def generate_id():
+    return str(uuid.uuid4())
+
+def create_directory():
+    random_uid = generate_id()
+    upload_folder = f"{TEMP_UPLOAD_DIR}/{random_uid}"
+    upload_folder_base = f"{upload_folder}/base_images"
+    upload_folder_target = f"{upload_folder}/target_images"
+    os.makedirs(upload_folder_base, exist_ok=True)
+    os.makedirs(upload_folder_target, exist_ok=True)
+
+    return upload_folder, upload_folder_base, upload_folder_target
+
+def load_json(class_data_str):
+    try:
+        # Parse the JSON string into a Python dictionary
+        class_data = json.loads(class_data_str)
+    except json.JSONDecodeError:
+        return 1, "Invalid JSON format for class."
+
+    # Access the 'class_values' dictionary from the parsed data
+    class_values = class_data.get('class_values')
+
+    if class_values is None:
+        return 1, "class_values key is missing in the provided data."
+    
+    return 0, class_values
+
 @app.route('/run-sift', methods=['POST'])
 def generate_bounding_box():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part in the request"}), 400
 
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
-
-    # Ensure uploaded file is a zip file
-    if not (file.filename.endswith('.zip') or file.filename.endswith('.rar')):
-        return jsonify({"error": "Only ZIP or RAR files are allowed"}), 400
+    if 'base_archive' not in request.files or 'target_archive' not in request.files:
+        return jsonify({"error": "Both 'base_archive' and 'target_archive' are required."}), 400
     
+    if 'class' not in request.form:
+        return jsonify({"error": "Object Class is required."}), 400
+    
+    class_data_str = request.form['class']
+
+    json_error, class_values = load_json(class_data_str)
+    if json_error:
+        return jsonify({"error": class_values}), 400
+               
+    base_archive = request.files['base_archive']
+    target_archive = request.files['target_archive']
+    
+    upload_error, message = validate_request(base_archive, target_archive)
+    if upload_error:
+        return jsonify({"error": message}), 400
+           
     # Create a temporary directory to extract the zip file
-    random_uid = str(uuid.uuid4())
-    upload_folder = f"temp_upload_{random_uid}"
-    os.makedirs(upload_folder, exist_ok=True)
-    archive_path = os.path.join(upload_folder, file.filename)
+    upload_folder, upload_folder_base, upload_folder_target = create_directory()
+
+    base_path = os.path.join(upload_folder_base, base_archive.filename)
+    target_path = os.path.join(upload_folder_target, target_archive.filename)
     
     # Save the uploaded file
-    file.save(archive_path)
-
+    base_archive.save(base_path)
+    target_archive.save(target_path)
+    
     # Extract the archive
     try:
-        Archive(archive_path).extractall(upload_folder)
+        Archive(base_path).extractall(upload_folder_base)
+        Archive(target_path).extractall(upload_folder_target)
     except Exception as e:
         return jsonify({"error": f"Failed to extract archive: {str(e)}"}), 400
 
-    # # Find the base image and other images
-    # base_image_path = None
-    # image_paths = []
-    # for root, dirs, files in os.walk(upload_folder):
-    #     for filename in files:
-    #         if filename == "base_image":
-    #             base_image_path = os.path.join(root, filename)
-    #         else:
-    #             image_paths.append(os.path.join(root, filename))
+    # Process base images
+    bounding_boxes = []
+    for base_filename, class_id in class_values.items():
+        base_image_path = os.path.join(upload_folder_base, base_filename)
+        print("here")
+        # Run SIFT on all target images for the current base image
+        for target_filename in os.listdir(upload_folder_target):
+            target_image_path = os.path.join(upload_folder_target, target_filename)
+            print(target_image_path)
+            # Generate bounding box for this base-target image pair
+            if os.path.exists(base_image_path) and os.path.exists(target_image_path):
+                bbox = process_images(base_image_path, target_image_path)
+                print(bbox)
+                if bbox:
+                    x_center, y_center, width, height = bbox
+                    bounding_boxes.append(f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}")
+                else:
+                    bounding_boxes.append(f"{class_id} 0 0 0 0")  # No match found, set to 0s
 
-    # if not base_image_path:
-    #     return jsonify({"error": "Base image (base_image) not found in the zip"}), 400
+    # Save results to text file
+    output_file = os.path.join(upload_folder, "bounding_boxes.txt")
+    with open(output_file, 'w') as f:
+        f.write("\n".join(bounding_boxes))
 
-    # # Process images and generate results
-    # results = process_images(base_image_path, image_paths)
-
-    # # Save results to a text file
-    # output_file = os.path.join(upload_folder, "bounding_boxes.txt")
-    # with open(output_file, 'w') as f:
-    #     f.write("\n".join(results))
-
-    # # Return the text file as response
+    # Return the bounding boxes text file
     # return send_file(output_file, as_attachment=True, download_name="bounding_boxes.txt")
-    return jsonify("success"), 200
+    return jsonify(
+        { 
+            "message": "success" 
+        }
+    ), 200
 
 # Run the Flask app
 if __name__ == "__main__":

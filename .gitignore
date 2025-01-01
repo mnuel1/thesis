@@ -14,3 +14,6 @@ output_dataset
 *.bmp
 *.tiff
 *.svg
+*.zip
+*.rar
+*.txt

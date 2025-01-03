@@ -6,6 +6,7 @@ import numpy as np
 import cv2
 import pysift
 import logging
+import shutil
 from pyunpack import Archive
 
 from flask import Flask, request, jsonify, send_file
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 MIN_MATCH_COUNT = 10
 FLANN_INDEX_KDTREE = 0
 TEMP_UPLOAD_DIR = "temp_upload"
-
+DOMAIN_LINK = "http://127.0.0.1:5000/"
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
@@ -104,7 +105,7 @@ def create_directory():
     os.makedirs(upload_folder_target, exist_ok=True)
     os.makedirs(annotated_folder, exist_ok=True)
 
-    return upload_folder, upload_folder_base, upload_folder_target, annotated_folder
+    return random_uid, upload_folder, upload_folder_base, upload_folder_target, annotated_folder
 
 def load_json(class_data_str):
     try:
@@ -122,7 +123,7 @@ def load_json(class_data_str):
     return 0, class_values
 
 @app.route('/run-sift', methods=['POST'])
-def generate_bounding_box():
+def generate_bounding_box():    
 
     if 'base_archive' not in request.files or 'target_archive' not in request.files or 'label' not in request.files:
         return jsonify({"error": "Both 'base_archive' and 'target_archive' and 'label' are required."}), 400
@@ -145,7 +146,7 @@ def generate_bounding_box():
         return jsonify({"error": message}), 400
            
     # Create a temporary directory to extract the zip file
-    upload_folder, upload_folder_base, upload_folder_target, annotated_folder = create_directory()
+    random_uid, upload_folder, upload_folder_base, upload_folder_target, annotated_folder = create_directory()
 
     base_path = os.path.join(upload_folder_base, base_archive.filename)
     target_path = os.path.join(upload_folder_target, target_archive.filename)
@@ -211,6 +212,10 @@ def generate_bounding_box():
     # Calculate accuracy
     accuracy = (success / (success + fail)) * 100 if (success + fail) > 0 else 0
 
+    # archive the output
+    archive_path = os.path.join(upload_folder, f"{random_uid}.zip")
+    shutil.make_archive(archive_path.replace('.zip', ''), 'zip', upload_folder)
+
     # Return the results as a JSON response
     return jsonify(
         {
@@ -218,13 +223,22 @@ def generate_bounding_box():
             "total_images": total_images,
             "total_success": success,
             "total_fail": fail,
-            "accuracy": f"{accuracy:.2f}%"
+            "accuracy": f"{accuracy:.2f}%",
+            "download_url": f"{DOMAIN_LINK}download_archive/{random_uid}"
         }
     ), 200
 
 
-# Return the bounding boxes text file
-    # return send_file(output_file, as_attachment=True, download_name="bounding_boxes.txt")
+@app.route('/download_archive/<random_uid>', methods=['GET'])
+def download_archive(random_uid):    
+    
+    archive_path = os.path.join(TEMP_UPLOAD_DIR, random_uid, f"{random_uid}.zip")
+    
+    # Check if the file exists before attempting to serve it
+    if not os.path.exists(archive_path):
+        return jsonify({"message": "File not found"}), 404
+        
+    return send_file(archive_path, as_attachment=True)
 
 if __name__ == "__main__":
     app.run(debug=True, host='0.0.0.0', port=5000)

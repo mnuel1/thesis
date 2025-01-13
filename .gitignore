@@ -4,7 +4,8 @@ Scripts
 share
 input_dataset
 output_dataset
-
+images
+test
 
 # Ignore common image formats
 *.png

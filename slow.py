@@ -1,7 +1,5 @@
 from numpy import all, any, array, arctan2, cos, sin, exp, dot, log, logical_and, roll, sqrt, stack, trace, unravel_index, pi, deg2rad, rad2deg, where, zeros, floor, full, nan, isnan, round, float32
 from numpy.linalg import det, lstsq, norm
-import numpy as np
-import cv2 
 from cv2 import resize, GaussianBlur, subtract, KeyPoint, INTER_LINEAR, INTER_NEAREST
 from functools import cmp_to_key
 import logging
@@ -37,10 +35,12 @@ def computeKeypointsAndDescriptors(image, sigma=1.6, num_intervals=3, assumed_bl
 #########################
 
 def generateBaseImage(image, sigma, assumed_blur):
+    """Generate base image from input image by upsampling by 2 in both directions and blurring
+    """
     logger.debug('Generating base image...')
-    image = cv2.resize(image, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-    sigma_diff = np.sqrt(max((sigma ** 2) - ((2 * assumed_blur) ** 2), 0.01))
-    return cv2.GaussianBlur(image, (0, 0), sigmaX=sigma_diff, sigmaY=sigma_diff)
+    image = resize(image, (0, 0), fx=2, fy=2, interpolation=INTER_LINEAR)
+    sigma_diff = sqrt(max((sigma ** 2) - ((2 * assumed_blur) ** 2), 0.01))
+    return GaussianBlur(image, (0, 0), sigmaX=sigma_diff, sigmaY=sigma_diff)  # the image blur is now sigma instead of assumed_blur
 
 def computeNumberOfOctaves(image_shape):
     """Compute number of octaves in image pyramid as function of base image shape (OpenCV default)
@@ -48,8 +48,7 @@ def computeNumberOfOctaves(image_shape):
     return int(round(log(min(image_shape)) / log(2) - 1))
 
 def generateGaussianKernels(sigma, num_intervals):
-    """Generate list of gaussian kernels at which to blur the input image. 
-    Default values of sigma, intervals, and octaves follow section 3 of Lowe's paper.
+    """Generate list of gaussian kernels at which to blur the input image. Default values of sigma, intervals, and octaves follow section 3 of Lowe's paper.
     """
     logger.debug('Generating scales...')
     num_images_per_octave = num_intervals + 3
@@ -119,11 +118,24 @@ def findScaleSpaceExtrema(gaussian_images, dog_images, num_intervals, sigma, ima
     return keypoints
 
 def isPixelAnExtremum(first_subimage, second_subimage, third_subimage, threshold):
+    """Return True if the center element of the 3x3x3 input array is strictly greater than or less than all its neighbors, False otherwise
+    """
     center_pixel_value = second_subimage[1, 1]
     if abs(center_pixel_value) > threshold:
-        return np.all(center_pixel_value >= first_subimage) and \
-               np.all(center_pixel_value >= third_subimage) and \
-               np.all(center_pixel_value >= second_subimage)
+        if center_pixel_value > 0:
+            return all(center_pixel_value >= first_subimage) and \
+                   all(center_pixel_value >= third_subimage) and \
+                   all(center_pixel_value >= second_subimage[0, :]) and \
+                   all(center_pixel_value >= second_subimage[2, :]) and \
+                   center_pixel_value >= second_subimage[1, 0] and \
+                   center_pixel_value >= second_subimage[1, 2]
+        elif center_pixel_value < 0:
+            return all(center_pixel_value <= first_subimage) and \
+                   all(center_pixel_value <= third_subimage) and \
+                   all(center_pixel_value <= second_subimage[0, :]) and \
+                   all(center_pixel_value <= second_subimage[2, :]) and \
+                   center_pixel_value <= second_subimage[1, 0] and \
+                   center_pixel_value <= second_subimage[1, 2]
     return False
 
 def localizeExtremumViaQuadraticFit(i, j, image_index, octave_index, num_intervals, dog_images_in_octave, sigma, contrast_threshold, image_border_width, eigenvalue_ratio=10, num_attempts_until_convergence=5):

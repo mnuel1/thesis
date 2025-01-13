@@ -20,66 +20,70 @@ MIN_MATCH_COUNT = 10
 FLANN_INDEX_KDTREE = 0
 TEMP_UPLOAD_DIR = "temp_upload"
 DOMAIN_LINK = "http://127.0.0.1:5000/"
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
 # Helper function to process images and compute bounding boxes
-def process_images(base_image_path, target_image_path):
-    return 0.499512, 0.499335, 0.999023, 0.998670
-    # img1 = cv2.imread(base_image_path, 0)  # base image 
-    # img2 = cv2.imread(target_image_path, 0)  # target image
-    # # Compute SIFT keypoints and descriptors
-    # kp1, des1 = pysift.computeKeypointsAndDescriptors(img1)
-    # kp2, des2 = pysift.computeKeypointsAndDescriptors(img2)
+def process_images(base_image_path, target_image_path, type):
 
-    # # Initialize and use FLANN    
-    # index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
-    # search_params = dict(checks=50)
-    # flann = cv2.FlannBasedMatcher(index_params, search_params)
-    # matches = flann.knnMatch(des1, des2, k=2)
+    # return 0.499512, 0.499335, 0.999023, 0.998670
+    sift = cv2.SIFT_create()
+    img1 = cv2.imread(base_image_path, 0)  # base image 
+    img2 = cv2.imread(target_image_path, 0)  # target image
 
-    # # Lowe's ratio test
-    # good = []
-    # for m, n in matches:
-    #     if m.distance < 0.7 * n.distance:
-    #         good.append(m)
+    # Compute SIFT keypoints and descriptors
+    kp1, des1 = pysift.computeKeypointsAndDescriptors(img1) if type == 1 else sift.detectAndCompute(img1, None)
+    kp2, des2 = pysift.computeKeypointsAndDescriptors(img2) if type == 1 else sift.detectAndCompute(img2, None)
 
-    # if len(good) > MIN_MATCH_COUNT:
-    #     # Estimate homography between template and scene
-    #     src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-    #     dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+    # Initialize and use FLANN    
+    index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+    search_params = dict(checks=50)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    matches = flann.knnMatch(des1, des2, k=2)
 
-    #     M = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)[0]
+    # Lowe's ratio test
+    good = []
+    for m, n in matches:
+        if m.distance < 0.7 * n.distance:
+            good.append(m)
 
-    #     # Define bounding box in the template image
-    #     h, w = img1.shape
-    #     pts = np.float32([[0, 0],
-    #                     [0, h - 1],
-    #                     [w - 1, h - 1],
-    #                     [w - 1, 0]]).reshape(-1, 1, 2)
+    if len(good) > MIN_MATCH_COUNT:
+        # Estimate homography between template and scene
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
 
-    #     # Transform points to the scene image
-    #     dst = cv2.perspectiveTransform(pts, M)
+        M = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)[0]
 
-    #     # Compute YOLO bounding box format
-    #     x_min = np.min(dst[:, 0, 0])
-    #     x_max = np.max(dst[:, 0, 0])
-    #     y_min = np.min(dst[:, 0, 1])
-    #     y_max = np.max(dst[:, 0, 1])
+        # Define bounding box in the template image
+        h, w = img1.shape
+        pts = np.float32([[0, 0],
+                        [0, h - 1],
+                        [w - 1, h - 1],
+                        [w - 1, 0]]).reshape(-1, 1, 2)
 
-    #     # Width and height of the scene image
-    #     img_width, img_height = img2.shape[1], img2.shape[0]
+        # Transform points to the scene image
+        dst = cv2.perspectiveTransform(pts, M)
 
-    #     # Normalize coordinates and compute center and dimensions
-    #     x_center = ((x_min + x_max) / 2) / img_width
-    #     y_center = ((y_min + y_max) / 2) / img_height
-    #     width = (x_max - x_min) / img_width
-    #     height = (y_max - y_min) / img_height
+        # Compute YOLO bounding box format
+        x_min = np.min(dst[:, 0, 0])
+        x_max = np.max(dst[:, 0, 0])
+        y_min = np.min(dst[:, 0, 1])
+        y_max = np.max(dst[:, 0, 1])
 
-    #     return x_center, y_center, width, height
-    # else:
-    #     return None  # Not enough matches found
+        # Width and height of the scene image
+        img_width, img_height = img2.shape[1], img2.shape[0]
+
+        # Normalize coordinates and compute center and dimensions
+        x_center = ((x_min + x_max) / 2) / img_width
+        y_center = ((y_min + y_max) / 2) / img_height
+        width = (x_max - x_min) / img_width
+        height = (y_max - y_min) / img_height
+
+        return x_center, y_center, width, height
+    else:
+        return None  # Not enough matches found
 
 def validate_request(base_file, target_file):
 
@@ -132,6 +136,7 @@ def generate_bounding_box():
         return jsonify({"error": "Object Class is required."}), 400
     
     class_data_str = request.form['class']
+    type = request.form['version']
 
     json_error, class_values = load_json(class_data_str)
     if json_error:
@@ -150,7 +155,7 @@ def generate_bounding_box():
 
     base_path = os.path.join(upload_folder_base, base_archive.filename)
     target_path = os.path.join(upload_folder_target, target_archive.filename)
-    label_path = os.path.join(upload_folder, label_txt.filename)
+    label_path = os.path.join(annotated_folder, "classes.txt")
     
     # Save the uploaded file
     base_archive.save(base_path)
@@ -189,7 +194,7 @@ def generate_bounding_box():
                 # Check if the base image exists
                 if os.path.exists(base_image_path):
                     # Process the images and generate bounding box
-                    bbox = process_images(base_image_path, target_image_path)
+                    bbox = process_images(base_image_path, target_image_path, type)
                                         
                     # If a bounding box was found, append it to the list
                     if bbox:

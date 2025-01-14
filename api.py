@@ -136,7 +136,7 @@ def generate_bounding_box():
         return jsonify({"error": "Object Class is required."}), 400
     
     class_data_str = request.form['class']
-    type = request.form['version']
+    type = int(request.form['version'])
 
     json_error, class_values = load_json(class_data_str)
     if json_error:

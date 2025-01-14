@@ -203,7 +203,7 @@ def generate_bounding_box():
                         success += 1
                     else:
                         # No match found, append a 0s bounding box
-                        bounding_boxes.append(f"{class_id} 0 0 0 0")
+                        # bounding_boxes.append(f"{class_id} 0 0 0 0")
                         fail += 1
             
             # Now that all comparisons for the current target image are done, write the results to a .txt file

@@ -1,0 +1,9 @@
+{
+  "detection_accuracy": "62.32%",
+  "download_url": "http://127.0.0.1:5000/download_archive/7ae0ad1b-865e-4ddf-abe8-cd90861a36d4",
+  "images_with_detections": 534,
+  "message": "success",
+  "processing_time": "3265.35 seconds",
+  "total_annotated_images": "98.89%",
+  "total_images": 540
+}

@@ -14,8 +14,9 @@ sift = cv2.SIFT_create()
 # Start the timer
 start_time = time.time()
 
-img1 = cv2.imread('images/1.jpg', 0)   # queryImage
-img2 = cv2.imread('images/2.jpg', 0)  # trainImage
+img1 = cv2.imread('test/food/test/a_f220.png', 0)   # queryImage
+# img2 = cv2.imread('test/food/train/market_bogota.jpg', 0)  # trainImage
+img2 = cv2.imread('test/food/test/a_f219.png', 0)  # trainImage
 
 # Check if images were loaded correctly
 if img1 is None or img2 is None:

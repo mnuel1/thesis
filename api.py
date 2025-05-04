@@ -34,14 +34,20 @@ def process_images(base_image_path, target_image_path, type):
     img2 = cv2.imread(target_image_path, 0)  # target image
 
     # Compute SIFT keypoints and descriptors
-    kp1, des1 = pysift.computeKeypointsAndDescriptors(img1) if type == 1 else sift.detectAndCompute(img1, None)
-    kp2, des2 = pysift.computeKeypointsAndDescriptors(img2) if type == 1 else sift.detectAndCompute(img2, None)
+    # kp1, des1 = pysift.computeKeypointsAndDescriptors(img1) if type == 1 else sift.detectAndCompute(img1, None)
+    # kp2, des2 = pysift.computeKeypointsAndDescriptors(img2) if type == 1 else sift.detectAndCompute(img2, None)
+
+    kp1, des1 = sift.detectAndCompute(img1, None)
+    kp2, des2 = sift.detectAndCompute(img2, None)
 
     # Initialize and use FLANN    
     index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
     search_params = dict(checks=50)
     flann = cv2.FlannBasedMatcher(index_params, search_params)
     matches = flann.knnMatch(des1, des2, k=2)
+
+    if matches is None:
+        return None
 
     # Lowe's ratio test
     good = []
@@ -55,7 +61,9 @@ def process_images(base_image_path, target_image_path, type):
         dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
 
         M = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)[0]
-
+        if M is None:
+            return None
+        
         # Define bounding box in the template image
         h, w = img1.shape
         pts = np.float32([[0, 0],
@@ -80,6 +88,11 @@ def process_images(base_image_path, target_image_path, type):
         y_center = ((y_min + y_max) / 2) / img_height
         width = (x_max - x_min) / img_width
         height = (y_max - y_min) / img_height
+
+        confidence = len(good) / len(matches)
+       
+        if confidence < 0.5:
+            return None
 
         return x_center, y_center, width, height
     else:
@@ -179,10 +192,10 @@ def generate_bounding_box():
 
     # Get the total number of target images
     total_images = len(os.listdir(upload_folder_target))
-
+    
     for target_filename in os.listdir(upload_folder_target):
         target_image_path = os.path.join(upload_folder_target, target_filename)
-        
+       
         # Check if the target image exists
         if os.path.exists(target_image_path):
             bounding_boxes = []  # Reset bounding_boxes for each target image
@@ -195,7 +208,7 @@ def generate_bounding_box():
                 if os.path.exists(base_image_path):
                     # Process the images and generate bounding box
                     bbox = process_images(base_image_path, target_image_path, type)
-                                        
+                    
                     # If a bounding box was found, append it to the list
                     if bbox:
                         x_center, y_center, width, height = bbox

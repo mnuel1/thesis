@@ -1,1 +1,6 @@
 pip install Flask Flask-Cors pyunpack patool numpy opencv-python matplotlib
+
+ pip install torch torchvision torchaudio
+∙ pip install ftfy regex tqdm
+∙ pip install git+https://github.com/openai/CLIP.git
+∙ pip install pillow numpy

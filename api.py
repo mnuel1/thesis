@@ -19,6 +19,8 @@ from flask_cors import CORS
 from threading import Lock
 import threading
 
+from asgiref.wsgi import WsgiToAsgi
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -37,6 +39,8 @@ RATIO_TEST_THRESHOLD = 0.75  # Threshold for Lowe's ratio test
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+asgi_app = WsgiToAsgi(app)
 
 progress_data = {}
 progress_lock = Lock()
@@ -569,4 +573,5 @@ if __name__ == "__main__":
     cleanup_temp_directories()
     
     # Run the Flask app
-    app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)
+    import uvicorn
+    uvicorn.run(asgi_app, host="0.0.0.0", port=8000)

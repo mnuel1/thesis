@@ -519,7 +519,7 @@ def download_archive(random_uid):
 
 @app.route('/get-results/<random_uid>', methods=['GET'])
 def get_results(random_uid):
-    result_path = os.path.join(TEMP_UPLOAD_DIR, f"{random_uid}\{random_uid}.json")
+    result_path = os.path.join(TEMP_UPLOAD_DIR, random_uid, f"{random_uid}.json")
     
     if not os.path.exists(result_path):
         return jsonify({"status": "processing"}), 202

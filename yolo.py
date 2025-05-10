@@ -1,24 +1,29 @@
-from ultralytics import YOLO
-import cv2
-import matplotlib.pyplot as plt
+import os
+import json
 
-# Load a pretrained YOLOv5 or YOLOv8 model
-model = YOLO('yolov5s.pt')  # or 'yolov8n.pt' for YOLOv8
+def classify_files(folder_path):
+    class_values = {}
 
-# Run inference on an image
-results = model('test/food/train/apple_r.png')  # replace with your image path
+    for filename in os.listdir(folder_path):
+        if os.path.isfile(os.path.join(folder_path, filename)):
+            # Convert to lowercase for case-insensitive comparison
+            lower_filename = filename.lower()
+            if "peso" in lower_filename:
+                class_values[filename] = 0
+            elif "yen" in lower_filename:
+                class_values[filename] = 1
 
-# Show results
-results[0].show()  # opens image with bounding boxes
+    result = {"class_values": class_values}
+    return result
 
-# Save results
-results[0].save(filename='output.jpg')  # saves image with boxes
+# Set your folder path here
+folder_path = "./test/train"
 
-# Print detections
-for result in results:
-    boxes = result.boxes
-    for box in boxes:
-        cls_id = int(box.cls)
-        conf = float(box.conf)
-        label = model.names[cls_id]
-        print(f"{label}: {conf:.2f}")
+# Get the classification
+classified_data = classify_files(folder_path)
+
+# Output to JSON
+with open("classified_files.json", "w") as json_file:
+    json.dump(classified_data, json_file, indent=2)
+
+print("JSON saved as classified_files.json")

@@ -16,6 +16,9 @@ import statistics  # Import statistics module for calculating mean
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
+from threading import Lock
+import threading
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -27,13 +30,17 @@ FLANN_INDEX_KDTREE = 1  # Increased for better accuracy
 TEMP_UPLOAD_DIR = "temp_upload"
 DOMAIN_LINK = "http://127.0.0.1:5000/"
 MAX_WORKERS = 4  # Number of parallel workers for processing
-CONFIDENCE_THRESHOLD = 0.50  # Threshold for confidence in matches
+CONFIDENCE_THRESHOLD = 0.65  # Threshold for confidence in matches
 SIFT_FEATURES = 3000  # Maximum number of features to detect
 RATIO_TEST_THRESHOLD = 0.75  # Threshold for Lowe's ratio test
 
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+progress_data = {}
+progress_lock = Lock()
+
 
 # Cache for SIFT descriptors to avoid recomputation
 @lru_cache(maxsize=100)
@@ -200,7 +207,7 @@ def load_json(class_data_str):
     
     return 0, class_values
 
-def process_target_image(args):
+def process_target_image(args, random_uid):
     """Process a single target image against all base images"""
     target_image_path, base_images, class_values, type = args
     bounding_boxes = []
@@ -320,6 +327,7 @@ def process_target_image(args):
             except Exception as e:
                 logger.error(f"Error processing base image {base_filename}: {str(e)}")
     
+    curr_confidence = 0
     # Add the best match for each class to our results
     for class_id, match in best_matches.items():
         x_center, y_center, width, height = match['bbox']
@@ -328,9 +336,89 @@ def process_target_image(args):
         confidences.append(confidence)  # Store the confidence score
         success_count += 1
         logger.info(f"Found object class {class_id} in {target_name} with confidence {confidence:.4f}")
+        curr_confidence = confidence
     
+    with progress_lock:
+        progress_data[random_uid]["processed"] += 1
+        progress_data[random_uid]["details"].append({
+            "image": target_name,
+            "confidence": curr_confidence,
+            "status": "done"
+        })
+          
     return target_image_path, bounding_boxes, success_count, confidences
 
+def process_images_background(process_args, class_values, annotated_folder, total_images, upload_folder, random_uid, start_time):
+    # Process images in parallel
+    success = 0
+    fail = 0
+    all_confidences = []  # To collect all confidence scores
+    
+    # Track per-image success for better accuracy calculation
+    images_with_detections = 0
+        
+    # Process images in parallel using ThreadPoolExecutor
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_path = {executor.submit(process_target_image, arg, random_uid): arg for arg in process_args}
+        
+        for future in concurrent.futures.as_completed(future_to_path):
+            try:
+                target_path, bounding_boxes, successes, confidences = future.result()
+                results[target_path] = bounding_boxes
+                success += successes
+                all_confidences.extend(confidences)  # Collect all confidence scores
+                
+                # If any detections were made for this image, count it as a success
+                if successes > 0:
+                    images_with_detections += 1
+                # Calculate failures based on number of classes and successes
+                fail += len(class_values) - successes
+            except Exception as e:
+                logger.error(f"Error processing task: {str(e)}")
+                fail += len(class_values)  # Count all as failures if exception occurs
+    
+    # Write results to files
+    for target_path, bounding_boxes in results.items():
+        target_name_without_ext = os.path.splitext(os.path.basename(target_path))[0]
+        output_file = os.path.join(annotated_folder, f"{target_name_without_ext}.txt")
+        
+        # Write all bounding boxes for the current target image
+        with open(output_file, 'w') as f:
+            f.write("\n".join(bounding_boxes))
+
+    # Calculate standard accuracy (per detection)
+    total_attempts = success + fail
+    
+    # Calculate new detection_accuracy based on average confidence
+    detection_accuracy = 0
+    if all_confidences:
+        # Calculate the average confidence score and convert to percentage
+        avg_confidence = statistics.mean(all_confidences) * 100
+        detection_accuracy = avg_confidence
+    
+    # Calculate image-based accuracy (percentage of images with at least one detection)
+    image_accuracy = (images_with_detections / total_images) * 100 if total_images > 0 else 0
+
+    # Archive the output
+    archive_path = os.path.join(upload_folder, f"{random_uid}.zip")
+    shutil.make_archive(archive_path.replace('.zip', ''), 'zip', upload_folder)
+
+    # Calculate processing time
+    processing_time = time.time() - start_time
+
+    result_path = os.path.join(upload_folder, f"{random_uid}.json")
+    with open(result_path, 'w') as f:
+        json.dump({
+            "message": "success",
+            "total_images": total_images,
+            "images_with_detections": images_with_detections,
+            "detection_accuracy": f"{detection_accuracy:.2f}%",
+            "total_annotated_images": f"{image_accuracy:.2f}%",
+            "processing_time": f"{processing_time:.2f} seconds",
+            "download_url": f"{DOMAIN_LINK}download_archive/{random_uid}"
+        }, f)
+   
 @app.route('/run-sift', methods=['POST'])
 def generate_bounding_box():    
     """Main route for processing images and generating bounding boxes"""
@@ -391,81 +479,28 @@ def generate_bounding_box():
     
     if total_images == 0:
         return jsonify({"error": "No valid images found in target archive"}), 400
-    
-    # Process images in parallel
-    success = 0
-    fail = 0
-    all_confidences = []  # To collect all confidence scores
-    
-    # Track per-image success for better accuracy calculation
-    images_with_detections = 0
-    
+
+    with progress_lock:
+        progress_data[random_uid] = {
+            "total": total_images,
+            "processed":  0,
+            "details": []
+            
+        }
     # Prepare arguments for parallel processing
     process_args = [(img_path, upload_folder_base, class_values, type) for img_path in target_images]
     
-    # Process images in parallel using ThreadPoolExecutor
-    results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_path = {executor.submit(process_target_image, arg): arg for arg in process_args}
-        
-        for future in concurrent.futures.as_completed(future_to_path):
-            try:
-                target_path, bounding_boxes, successes, confidences = future.result()
-                results[target_path] = bounding_boxes
-                success += successes
-                all_confidences.extend(confidences)  # Collect all confidence scores
-                
-                # If any detections were made for this image, count it as a success
-                if successes > 0:
-                    images_with_detections += 1
-                # Calculate failures based on number of classes and successes
-                fail += len(class_values) - successes
-            except Exception as e:
-                logger.error(f"Error processing task: {str(e)}")
-                fail += len(class_values)  # Count all as failures if exception occurs
+    threading.Thread(target=process_images_background, args=(
+        process_args, class_values, annotated_folder, total_images, upload_folder, random_uid, start_time
+    )).start()
+
+    return jsonify({
+        "message": "processing started",
+        "uid": random_uid,
+        "status_url": f"{DOMAIN_LINK}get-results/{random_uid}",
+        "progress_url": f"{DOMAIN_LINK}progress/{random_uid}"
+    }), 202
     
-    # Write results to files
-    for target_path, bounding_boxes in results.items():
-        target_name_without_ext = os.path.splitext(os.path.basename(target_path))[0]
-        output_file = os.path.join(annotated_folder, f"{target_name_without_ext}.txt")
-        
-        # Write all bounding boxes for the current target image
-        with open(output_file, 'w') as f:
-            f.write("\n".join(bounding_boxes))
-
-    # Calculate standard accuracy (per detection)
-    total_attempts = success + fail
-    
-    # Calculate new detection_accuracy based on average confidence
-    detection_accuracy = 0
-    if all_confidences:
-        # Calculate the average confidence score and convert to percentage
-        avg_confidence = statistics.mean(all_confidences) * 100
-        detection_accuracy = avg_confidence
-    
-    # Calculate image-based accuracy (percentage of images with at least one detection)
-    image_accuracy = (images_with_detections / total_images) * 100 if total_images > 0 else 0
-
-    # Archive the output
-    archive_path = os.path.join(upload_folder, f"{random_uid}.zip")
-    shutil.make_archive(archive_path.replace('.zip', ''), 'zip', upload_folder)
-
-    # Calculate processing time
-    processing_time = time.time() - start_time
-
-    # Return the results as a JSON response
-    return jsonify(
-        {
-            "message": "success",
-            "total_images": total_images,
-            "images_with_detections": images_with_detections,
-            "detection_accuracy": f"{detection_accuracy:.2f}%",
-            "total_annotated_images": f"{image_accuracy:.2f}%",
-            "processing_time": f"{processing_time:.2f} seconds",
-            "download_url": f"{DOMAIN_LINK}download_archive/{random_uid}"
-        }
-    ), 200
-
 
 @app.route('/download_archive/<random_uid>', methods=['GET'])
 def download_archive(random_uid):    
@@ -477,6 +512,29 @@ def download_archive(random_uid):
         return jsonify({"message": "File not found"}), 404
         
     return send_file(archive_path, as_attachment=True)
+
+@app.route('/get-results/<random_uid>', methods=['GET'])
+def get_results(random_uid):
+    result_path = os.path.join(TEMP_UPLOAD_DIR, f"{random_uid}\{random_uid}.json")
+    
+    if not os.path.exists(result_path):
+        return jsonify({"status": "processing"}), 202
+
+    with open(result_path, 'r') as f:
+        result = json.load(f)
+    
+    if "error" in result:
+        return jsonify(result), 500
+    
+    return jsonify(result), 200
+
+@app.route('/progress/<random_uid>', methods=['GET'])
+def get_progress(random_uid):
+    with progress_lock:
+        data = progress_data.get(random_uid)
+        if data is None:
+            return jsonify({"error": "UID not found or not started"}), 404
+        return jsonify(data), 200
 
 
 @app.route('/health', methods=['GET'])
